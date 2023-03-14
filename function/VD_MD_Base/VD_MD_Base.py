@@ -7,7 +7,8 @@ import csv
 from model import LinearNet,Network
 from criteria import hLoss, rLoss, oError, Conv, avgPre
 
-device = ('cuda' if torch.cuda.is_available() else 'cpu')
+#device = ('cuda' if torch.cuda.is_available() else 'cpu')
+device = 'cpu'
 
 def criterion(predictions, confidence):
 
@@ -140,8 +141,6 @@ def baseline(train_loader, test_loader, meta_loader, features_num, labels_num, l
     # method = baseline for baseline with meta data, else for baseline without meta data and ground-truth
 
     net = LinearNet(num_inputs=features_num, num_outputs=labels_num)
-    print(features_num)
-    print(labels_num)
     #net = Network(num_inputs=features_num,num_hides = 5,num_outputs=labels_num)
     net = net.to(device)
     optimizer = optim.SGD(params=net.params(), lr=lr, momentum=momentum, weight_decay=weight_decay)

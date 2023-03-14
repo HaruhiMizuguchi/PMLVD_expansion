@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader
 from scipy.optimize import nnls
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics.pairwise import cosine_similarity,cosine_distances
 
 def read_data(data,p_noise,p_val,cv):
     if data in ["music_emotion","music_style"]:
@@ -46,11 +47,11 @@ def read_data(data,p_noise,p_val,cv):
     train_val_gt = ground_truth[train_val_ind]
     train_noise_feature = feature[train_noise_ind]
     train_noise_cand = cand[train_noise_ind]
-    # train_noise_gt = ground_truth[train_noise_ind]
+    train_noise_gt = ground_truth[train_noise_ind]
 
-    return(train_feature,train_cand,train_gt,test_feature,test_gt,train_val_feature,train_val_gt,train_noise_feature,train_noise_cand,batch_size)
+    return(train_feature,train_cand,train_gt,test_feature,test_gt,train_val_feature,train_val_gt,train_noise_feature,train_noise_cand,train_noise_gt,batch_size)
 
-def predict_creds(train_val_feature,train_val_gt,train_noise_feature,train_noise_cand):
+def predict_creds(train_val_feature,train_val_gt,train_noise_feature,train_noise_cand,mode,kind_dist,k,alpha=-1):
     
     # 正規化する関数
     def regu(a):
@@ -60,18 +61,77 @@ def predict_creds(train_val_feature,train_val_gt,train_noise_feature,train_noise
         aa = scaler.transform(a.astype('float')).T
         return(aa)
 
-    # ノイズ付き集合の特徴を検証集合の特徴で線形近似
-    W = np.zeros((train_noise_feature.shape[0],train_val_feature.shape[0]))
-    for i in range(train_noise_feature.shape[0]):
-        W[i] = nnls(train_val_feature.T,train_noise_feature[i])[0]
-    
-    # 重みを用いて訓練集合の信頼度を推定
-    creds_pre = (train_val_gt.T @ W.T).T
-    creds_pre[np.where(train_noise_cand==0)] = 0
-    creds_pre = regu(creds_pre)
+    # 検証集合全てで線形近似
+    def default_predict(train_val_feature,train_val_gt,train_noise_feature,train_noise_cand):
+        # ノイズ付き集合の特徴を検証集合の特徴で線形近似
+        W = np.zeros((train_noise_feature.shape[0],train_val_feature.shape[0]))
+        for i in range(train_noise_feature.shape[0]):
+            W[i] = nnls(train_val_feature.T,train_noise_feature[i])[0]
+        
+        # 重みを用いて訓練集合の信頼度を推定
+        creds_pre = (train_val_gt.T @ W.T).T
+        creds_pre[np.where(train_noise_cand==0)] = 0
+        creds_pre = regu(creds_pre)
+        return(creds_pre)
 
-    return creds_pre
+    # 検証集合とノイズ付き集合のknnでそれぞれ線形近似した後重みをつけて足す
+    def predict_default_plus_knn(train_val_feature,train_val_gt,train_noise_feature,train_noise_cand,kind_dist,k,alpha):
+        # 検証集合のみ
+        W = np.zeros((train_noise_feature.shape[0],train_val_feature.shape[0]))
+        W_cand = np.zeros((train_noise_feature.shape[0],k))
+        for i in range(train_noise_feature.shape[0]):
+            W[i] = nnls(train_val_feature.T,train_noise_feature[i])[0]
+
+        # ノイズ付き集合のknn
+        if kind_dist == "euclid":
+            print("euclidian distance is not implemented yet")
+        elif kind_dist == "cosine":
+            train_cos_sim = cosine_similarity(train_noise_feature)
+            meta_cos_sim = cosine_similarity(train_val_feature)
+            for i in range(train_noise_feature.shape[0]):
+                sorted_ind = np.argsort(train_cos_sim[i])
+                cand_features_kNN = train_noise_feature[sorted_ind[1:k+1]]
+                cand_plabels_kNN = train_noise_cand[sorted_ind[1:k+1]]
+                W_cand[i] = nnls(cand_features_kNN.T,train_noise_feature[i])[0]
+        if alpha==-1:
+            cand_weight = (np.sum(train_val_gt)/train_val_gt.shape[0]) / (np.sum(train_noise_cand)/train_noise_cand.shape[0])
+        else:
+            cand_weight = alpha
+        creds_pre = ((1-cand_weight) * (train_val_gt.T @ W.T) + cand_weight * (cand_plabels_kNN.T @ W_cand.T)).T
+        creds_pre = regu(creds_pre)
+        return(creds_pre)
     
+    # 全ての訓練データのkNN
+    def predict_all_knn(train_val_feature,train_val_gt,train_noise_feature,train_noise_cand,kind_dist,k):
+        W = np.zeros((train_noise_feature.shape[0],k))
+        all_feature = np.concatenate((train_noise_feature,train_val_feature),axis=0)
+        all_label = np.concatenate((train_noise_cand,train_val_gt),axis=0)
+        if kind_dist == "euclid":
+            print("euclidian distance is not implemented yet")
+        elif kind_dist == "cosine":
+            train_cos_sim = cosine_similarity(all_feature)
+            for i in range(train_noise_feature.shape[0]):
+                sorted_ind = np.argsort(train_cos_sim[i])
+                cand_features_kNN = all_feature[sorted_ind[1:k+1]]
+                cand_plabels_kNN = all_label[sorted_ind[1:k+1]]
+        W[i] = nnls(cand_features_kNN.T,train_noise_feature[i])[0]
+        creds_pre = (cand_plabels_kNN.T @ W.T).T
+        creds_pre = regu(creds_pre)
+        return(creds_pre)
+
+
+    if mode == 0:  
+        return(default_predict(train_val_feature,train_val_gt,train_noise_feature,train_noise_cand))
+    
+    elif mode == 1:
+        return(predict_default_plus_knn(train_val_feature,train_val_gt,train_noise_feature,train_noise_cand,kind_dist,k,alpha))
+    
+    elif mode == 2:
+        return(predict_all_knn(train_val_feature,train_val_gt,train_noise_feature,train_noise_cand,kind_dist,k))
+    
+    else:
+        print("this mode is not supported.\n")
+
 def get_dataloader(train_feature,train_cand,train_gt,test_feature,test_gt,train_val_feature,train_val_gt,train_noise_feature,train_noise_cand,creds_pre,batch_size):
     
     features_num = train_feature.shape[1]
